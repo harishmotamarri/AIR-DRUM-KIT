@@ -221,31 +221,72 @@ class SoundBank:
         "perc":    lambda: gen_perc(),
     }
 
-    def __init__(self):
+    def __init__(self, pads=None):
         self.sounds: dict[str, pygame.mixer.Sound] = {}
         self._channels: dict[str, pygame.mixer.Channel] = {}
+        self._pads = list(pads or [])
         self._load_all()
+
+    @staticmethod
+    def _resolve_sample_path(sample_path: str) -> str | None:
+        if not sample_path:
+            return None
+
+        normalized = sample_path.lstrip("/\\")
+        candidates = [sample_path, normalized, os.path.join("assets", normalized)]
+        for candidate in candidates:
+            if candidate and os.path.exists(candidate):
+                return candidate
+        return None
+
+    def _fallback_key(self, key: str) -> str:
+        aliases = {
+            "kickL": "kick",
+            "kickR": "kick",
+            "hihatC": "hihat",
+            "splash": "crash",
+        }
+        return aliases.get(key, key)
+
+    @staticmethod
+    def _pad_id(pad) -> str:
+        if hasattr(pad, "id"):
+            return pad.id
+        if isinstance(pad, dict):
+            return pad.get("id", "")
+        return ""
 
     def _load_all(self):
         print("🎵 Loading drum sounds...")
-        pygame.mixer.set_num_channels(max(pygame.mixer.get_num_channels(), len(self.GENERATORS)))
+        source_keys = [self._pad_id(p) for p in self._pads if self._pad_id(p)] if self._pads else list(self.GENERATORS.keys())
+        pygame.mixer.set_num_channels(max(pygame.mixer.get_num_channels(), len(source_keys)))
 
-        for i, (name, gen_fn) in enumerate(self.GENERATORS.items()):
-            # Try loading from file first
-            path = os.path.join("assets", "sounds", f"{name}.wav")
-            if os.path.exists(path):
+        for i, key in enumerate(source_keys):
+            pad = next((p for p in self._pads if self._pad_id(p) == key), None)
+            sample_path = getattr(pad, "sample", None) if pad is not None else None
+            load_path = self._resolve_sample_path(sample_path) if sample_path else None
+            fallback_key = self._fallback_key(key)
+            gen_fn = self.GENERATORS.get(fallback_key, self.GENERATORS.get(key))
+
+            if load_path:
                 try:
-                    self.sounds[name] = pygame.mixer.Sound(path)
-                    print(f"   ✓ {name:10s} [file]")
+                    self.sounds[key] = pygame.mixer.Sound(load_path)
+                    print(f"   ✓ {key:10s} [file]")
                 except Exception:
-                    self.sounds[name] = gen_fn()
-                    print(f"   ✓ {name:10s} [synthesized]")
+                    self.sounds[key] = gen_fn() if gen_fn else pygame.mixer.Sound(buffer=b"")
+                    print(f"   ✓ {key:10s} [synthesized]")
             else:
-                # Synthesize
-                self.sounds[name] = gen_fn()
-                print(f"   ✓ {name:10s} [synthesized]")
+                self.sounds[key] = gen_fn() if gen_fn else pygame.mixer.Sound(buffer=b"")
+                print(f"   ✓ {key:10s} [synthesized]")
 
-            self._channels[name] = pygame.mixer.Channel(i)
+            self._channels[key] = pygame.mixer.Channel(i)
+
+        for key, gen_fn in self.GENERATORS.items():
+            if key in self.sounds:
+                continue
+            self.sounds[key] = gen_fn()
+            self._channels[key] = pygame.mixer.Channel(len(self._channels))
+            print(f"   ✓ {key:10s} [synthesized]")
 
         print(f"   ✅ {len(self.sounds)} sounds ready\n")
 

@@ -24,28 +24,40 @@ VELOCITY_SMOOTHING  = 3     # Frames for velocity average
 HIT_VELOCITY_THRESH = 12     # Pixels/frame to trigger hit
 COOLDOWN_FRAMES     = 5     # Prevent double-triggers
 
-# ── Drum Pad Layout (normalized 0-1 coords, then scaled) ──────
-# Each pad: (name, center_x, center_y, radius, color_rgb, sound_key)
-DRUM_PADS = [
-    # ═══ LEFT HAND ZONE (Right side of screen) ═══
-    # Name           cx     cy     rx    ry    Color              Sound Key    Finger
-    ("L-CRASH",      0.85,  0.35,  55,   35,   (180, 100, 255),  "crash",     "left_index"),
-    ("L-RIDE",       0.78,  0.45,  50,   32,   (100, 220, 180),  "ride",      "left_middle"),
-    ("L-HIHAT",      0.88,  0.55,  50,   32,   (255, 220, 50 ),  "hihat",     "left_ring"),
-    ("L-OPENHAT",    0.80,  0.65,  50,   32,   (255, 170, 30 ),  "openhat",   "left_pinky"),
-    ("L-TOM1",       0.72,  0.75,  55,   35,   (255, 120, 60 ),  "tom1",      "left_thumb"),
-    
-    # ═══ RIGHT HAND ZONE (Left side of screen) ═══
-    ("R-KICK",       0.15,  0.75,  60,   40,   (220, 60,  60 ),  "kick",      "right_thumb"),
-    ("R-SNARE",      0.25,  0.55,  55,   35,   (60,  180, 220),  "snare",     "right_index"),
-    ("R-CLAP",       0.18,  0.45,  50,   32,   (80,  255, 150),  "clap",      "right_middle"),
-    ("R-TOM2",       0.30,  0.65,  50,   32,   (255, 80,  140),  "tom2",      "right_ring"),
-    ("R-PERC",       0.22,  0.35,  45,   28,   (200, 150, 255),  "perc",      "right_pinky"),
-    
-    # ═══ CENTER ZONE (Both hands) ═══
-    ("SNARE-C",      0.50,  0.50,  70,   45,   (60,  180, 220),  "snare",     "any"),
-    ("KICK-C",       0.50,  0.80,  80,   50,   (220, 60,  60 ),  "kick",      "any"),
+# ── Drum Pad Layout (normalized 0-1 canvas coords) ───────────
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class PadSpec:
+    id: str
+    label: str
+    x: float
+    y: float
+    w: float
+    h: float
+    shape: str
+    color: str
+    sample: str
+    key: str | None = None
+
+
+PADS = [
+    PadSpec("crash",  "Crash",  0.18, 0.18, 0.14, 0.14, "circle",    "#6EC1E4", "assets/sfx/tollywood/crash1.wav",      "Q"),
+    PadSpec("ride",   "Ride",   0.50, 0.18, 0.14, 0.14, "circle",    "#B28DFF", "assets/sfx/tollywood/ride1.wav",       "W"),
+    PadSpec("splash", "Splash", 0.82, 0.18, 0.12, 0.12, "circle",    "#8EE3A6", "assets/sfx/tollywood/splash.wav",      "E"),
+    PadSpec("hihatC", "Hi-Hat", 0.25, 0.40, 0.13, 0.13, "roundRect", "#FFC857", "assets/sfx/tollywood/hihat_closed.wav", "A"),
+    PadSpec("snare",  "Snare",  0.50, 0.42, 0.16, 0.12, "roundRect", "#FF6B6B", "assets/sfx/tollywood/snare_devi.wav",   "S"),
+    PadSpec("tom1",   "Tom 1",  0.72, 0.40, 0.13, 0.13, "roundRect", "#4D96FF", "assets/sfx/tollywood/tom1.wav",        "D"),
+    PadSpec("tom2",   "Tom 2",  0.88, 0.48, 0.13, 0.13, "roundRect", "#3DDC97", "assets/sfx/tollywood/tom2.wav",        "F"),
+    PadSpec("perc",   "Perc",   0.12, 0.52, 0.12, 0.12, "roundRect", "#FF9F1C", "assets/sfx/tollywood/dundubhi.wav",     "Z"),
+    PadSpec("clap",   "Clap",   0.22, 0.58, 0.12, 0.12, "roundRect", "#FFD6A5", "assets/sfx/tollywood/folk_clap.wav",    "X"),
+    PadSpec("kickL",  "Kick L", 0.44, 0.78, 0.18, 0.18, "circle",    "#A8DADC", "assets/sfx/tollywood/kick_left_thump.wav",  "J"),
+    PadSpec("kickR",  "Kick R", 0.56, 0.78, 0.18, 0.18, "circle",    "#A8DADC", "assets/sfx/tollywood/kick_right_thump.wav", "K"),
 ]
+
+# Backwards-compatible alias for older imports.
+DRUM_PADS = PADS
 
 FINGER_LANDMARKS = {
     "thumb":  4,

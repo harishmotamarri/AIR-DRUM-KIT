@@ -9,7 +9,7 @@ import pygame
 import math
 import time
 from config import (Colors, WINDOW_WIDTH, WINDOW_HEIGHT,
-                    HEADER_HEIGHT, FOOTER_HEIGHT, DRUM_PADS,
+                    HEADER_HEIGHT, FOOTER_HEIGHT, PADS,
                     TUTORIAL_TIMEOUT)
 
 
@@ -204,21 +204,47 @@ class Footer:
                 break
 
 
+class FullscreenButton:
+    """Prominent top-right fullscreen control."""
+
+    def __init__(self):
+        self.fm = FontManager.get()
+        self.rect = pygame.Rect(WINDOW_WIDTH - 210, 14, 190, 32)
+
+    def render(self, surface: pygame.Surface, active: bool = False):
+        label = "EXIT FULL SCREEN" if active else "FULL SCREEN"
+        label_surf = self.fm["small"].render(label, True, Colors.BG_DARK)
+        fill_col = Colors.GREEN_NEON if active else Colors.ACCENT_CYAN
+        bg_col = (245, 245, 245) if active else (235, 245, 255)
+
+        self.rect = pygame.Rect(WINDOW_WIDTH - 210, 14, 190, 32)
+        pygame.draw.rect(surface, bg_col, self.rect, border_radius=10)
+        pygame.draw.rect(surface, fill_col, self.rect, 2, border_radius=10)
+
+        # Small status dot for visibility.
+        dot_x = self.rect.x + 16
+        dot_y = self.rect.y + self.rect.height // 2
+        pygame.draw.circle(surface, fill_col, (dot_x, dot_y), 5)
+
+        surface.blit(
+            label_surf,
+            (self.rect.x + 30,
+             self.rect.y + (self.rect.height - label_surf.get_height()) // 2),
+        )
+
+    def hit_test(self, pos: tuple[int, int]) -> bool:
+        return self.rect.collidepoint(pos)
+
+
 class BeatGridUI:
     """
     Compact sequencer grid showing recorded pattern.
     Shows 16 steps × N drum tracks.
     """
 
-    TRACK_KEYS = ["kick", "snare", "hihat", "openhat",
-                  "crash", "ride", "tom1", "tom2", "clap"]
-    TRACK_NAMES = ["KICK", "SNARE", "HI-HAT", "OPEN HAT",
-                   "CRASH", "RIDE", "TOM 1", "TOM 2", "CLAP"]
-    TRACK_COLORS = [
-        Colors.RED_HOT, Colors.ACCENT_CYAN, Colors.YELLOW_NEON,
-        Colors.ORANGE,  Colors.ACCENT_PURPLE, Colors.GREEN_NEON,
-        (255, 120, 60), (255, 80, 140), Colors.GREEN_NEON,
-    ]
+    TRACK_KEYS = [pad.id for pad in PADS]
+    TRACK_NAMES = [pad.label.upper() for pad in PADS]
+    TRACK_COLORS = [tuple(int(pad.color[i:i+2], 16) for i in (1, 3, 5)) for pad in PADS]
 
     def __init__(self):
         self.fm = FontManager.get()
@@ -335,98 +361,57 @@ class PadOverlay:
             if dist < 1.5:
                 hover_intensity = max(hover_intensity, (1.5 - dist) / 1.5)
 
-        pad_surf = pygame.Surface(
-            (pad.rx * 2 + 80, pad.ry * 2 + 80), pygame.SRCALPHA
-        )
-
+        pad_surf = pygame.Surface((pad.rx * 2 + 80, pad.ry * 2 + 80), pygame.SRCALPHA)
         center = (pad.rx + 40, pad.ry + 40)
+        rect = pygame.Rect(center[0] - pad.rx, center[1] - pad.ry, pad.rx * 2, pad.ry * 2)
 
-        # Layer 1: Outer glow rings
-        glow_intensity = intensity * 0.6 + hover_intensity * 0.3
-        if glow_intensity > 0.05:
-            for i in range(5, 0, -1):
-                ring_r_x = pad.rx + i * 12
-                ring_r_y = pad.ry + i * 6
-                alpha = int(glow_intensity * 60 * (6 - i) / 5)
-                glow_col = (*pad.color, alpha)
-                pygame.draw.ellipse(
-                    pad_surf, glow_col,
-                    (center[0] - ring_r_x, center[1] - ring_r_y,
-                     ring_r_x * 2, ring_r_y * 2)
-                )
+        glow = 12 * intensity if intensity > 0 else 0
+        if glow > 0:
+            glow_surf = pygame.Surface(pad_surf.get_size(), pygame.SRCALPHA)
+            if pad.shape == "circle":
+                pygame.draw.ellipse(glow_surf, (*pad.color, int(50 + glow * 5)), rect.inflate(24, 24))
+            else:
+                pygame.draw.rect(glow_surf, (*pad.color, int(50 + glow * 5)), rect.inflate(24, 18), border_radius=18)
+            pad_surf.blit(glow_surf, (0, 0))
 
-        # Layer 2: Base fill
-        base_alpha = 45 + int(intensity * 120) + int(hover_intensity * 40)
-        fill_col = tuple(min(255, int(c * (0.6 + intensity * 0.4)))
-                        for c in pad.color)
-        pygame.draw.ellipse(
-            pad_surf, (*fill_col, base_alpha),
-            (center[0] - pad.rx, center[1] - pad.ry,
-             pad.rx * 2, pad.ry * 2)
-        )
+        fill_alpha = 70 + int(intensity * 90) + int(hover_intensity * 40)
+        fill_col = (255, 255, 255, min(120, fill_alpha // 2))
+        border_col = (*pad.color, 240)
 
-        # Layer 3: Inner gradient
-        if intensity > 0.1:
-            inner_rx = int(pad.rx * 0.6)
-            inner_ry = int(pad.ry * 0.6)
-            inner_alpha = int(intensity * 180)
-            bright_col = tuple(min(255, c + 60) for c in pad.color)
-            pygame.draw.ellipse(
-                pad_surf, (*bright_col, inner_alpha),
-                (center[0] - inner_rx, center[1] - inner_ry,
-                 inner_rx * 2, inner_ry * 2)
-            )
+        if pad.shape == "circle":
+            pygame.draw.ellipse(pad_surf, fill_col, rect)
+            pygame.draw.ellipse(pad_surf, border_col, rect, 3)
+            if intensity > 0.35:
+                pygame.draw.ellipse(pad_surf, (255, 255, 255, int(80 * intensity)), rect.inflate(-pad.rx // 2, -pad.ry // 2))
+        else:
+            pygame.draw.rect(pad_surf, fill_col, rect, border_radius=16)
+            pygame.draw.rect(pad_surf, border_col, rect, 3, border_radius=16)
+            if intensity > 0.35:
+                pygame.draw.rect(pad_surf, (255, 255, 255, int(80 * intensity)), rect.inflate(-pad.rx // 2, -pad.ry // 2), border_radius=12)
 
-        # Layer 4: Border
-        border_alpha = 140 + int(intensity * 115)
-        border_width = 2 + int(intensity * 2)
-        border_col = tuple(min(255, c + int(intensity * 50)) for c in pad.color)
-        pygame.draw.ellipse(
-            pad_surf, (*border_col, border_alpha),
-            (center[0] - pad.rx, center[1] - pad.ry,
-             pad.rx * 2, pad.ry * 2),
-            border_width
-        )
-
-        # Layer 5: Hit flash
-        if intensity > 0.7:
-            flash_alpha = int((intensity - 0.7) / 0.3 * 200)
-            pygame.draw.ellipse(
-                pad_surf, (255, 255, 255, flash_alpha),
-                (center[0] - pad.rx + 5, center[1] - pad.ry + 3,
-                 pad.rx * 2 - 10, pad.ry * 2 - 6)
-            )
-
-        # Blit pad surface
         surface.blit(pad_surf, (pad.cx - pad.rx - 40, pad.cy - pad.ry - 40))
 
-        # Label
-        label_alpha = 160 + int(intensity * 95)
-        label_col = lerp_color(Colors.GRAY_MID, Colors.WHITE, intensity)
-
-        # Clean name (remove L-/R- prefix for display)
-        display_name = pad.name.replace("L-", "").replace("R-", "").replace("-C", "")
-
-        # Shadow
-        shadow = self.fm["pad"].render(display_name, True, (0, 0, 0))
-        shadow.set_alpha(label_alpha)
-        surface.blit(shadow,
-                    (pad.cx - shadow.get_width() // 2 + 1,
-                     pad.cy - shadow.get_height() // 2 + 1))
-
-        # Label
-        label = self.fm["pad"].render(display_name, True, label_col)
+        label_alpha = 180 + int(intensity * 60)
+        label = self.fm["pad"].render(pad.label, True, Colors.WHITE)
         label.set_alpha(label_alpha)
-        surface.blit(label,
-                    (pad.cx - label.get_width() // 2,
-                     pad.cy - label.get_height() // 2))
+        shadow = self.fm["pad"].render(pad.label, True, (0, 0, 0))
+        shadow.set_alpha(label_alpha // 2)
+        surface.blit(shadow, (pad.cx - shadow.get_width() // 2 + 1, pad.cy - shadow.get_height() // 2 + 1))
+        surface.blit(label, (pad.cx - label.get_width() // 2, pad.cy - label.get_height() // 2))
 
-        # Hit counter (small)
+        if pad.key:
+            key_text = self.fm["tiny"].render(pad.key, True, Colors.BG_DARK)
+            key_box = pygame.Rect(pad.cx + pad.rx - key_text.get_width() - 10,
+                                  pad.cy - pad.ry + 8,
+                                  key_text.get_width() + 8,
+                                  key_text.get_height() + 4)
+            pygame.draw.rect(surface, Colors.WHITE, key_box, border_radius=4)
+            surface.blit(key_text, (key_box.x + 4, key_box.y + 2))
+
         if pad.total_hits > 0:
             count_text = self.fm["tiny"].render(str(pad.total_hits), True, pad.color)
             count_text.set_alpha(180)
-            surface.blit(count_text,
-                        (pad.cx + pad.rx - 8, pad.cy - pad.ry - 2))
+            surface.blit(count_text, (pad.cx + pad.rx - 8, pad.cy - pad.ry - 2))
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -459,13 +444,13 @@ class TutorialOverlay:
             "title": "🥁 Hit the SNARE!",
             "text": "Aim for the blue pad in the center",
             "condition": "hit_snare",
-            "highlight": "SNARE-C",
+            "highlight": "snare",
         },
         {
             "title": "🦶 Now the KICK!",
             "text": "Hit the red pad at the bottom",
             "condition": "hit_kick",
-            "highlight": "KICK-C",
+            "highlight": "kickL",
         },
         {
             "title": "🎉 You're Ready!",
@@ -514,7 +499,8 @@ class TutorialOverlay:
         elif condition == "hit_snare":
             advance = self.hit_counts.get("snare", 0) >= 2
         elif condition == "hit_kick":
-            advance = self.hit_counts.get("kick", 0) >= 2
+            advance = (self.hit_counts.get("kickL", 0) +
+                       self.hit_counts.get("kickR", 0)) >= 2
         elif condition == "complete":
             if self.step_timer > 180:
                 self.completed = True
@@ -539,8 +525,11 @@ class TutorialOverlay:
         surface.blit(dark, (0, 0))
 
         if step["highlight"] and step["highlight"] != "center":
+            targets = {step["highlight"]}
+            if step["highlight"] == "kickL":
+                targets.add("kickR")
             for pad in pads:
-                if pad.name == step["highlight"]:
+                if pad.name in targets:
                     self._draw_highlight(surface, pad)
 
         card_w, card_h = 500, 160
@@ -588,10 +577,12 @@ class TutorialOverlay:
                 (pad.rx * 2 + r_off * 2, pad.ry * 2 + r_off * 2),
                 pygame.SRCALPHA
             )
-            pygame.draw.ellipse(highlight, col,
-                               (0, 0, pad.rx * 2 + r_off * 2, pad.ry * 2 + r_off * 2), 3)
-            surface.blit(highlight,
-                        (pad.cx - pad.rx - r_off, pad.cy - pad.ry - r_off))
+            rect = pygame.Rect(r_off, r_off, pad.rx * 2, pad.ry * 2)
+            if getattr(pad, "shape", "circle") == "circle":
+                pygame.draw.ellipse(highlight, col, rect, 3)
+            else:
+                pygame.draw.rect(highlight, col, rect, 3, border_radius=16)
+            surface.blit(highlight, (pad.cx - pad.rx - r_off, pad.cy - pad.ry - r_off))
 
     def skip(self):
         """Skip tutorial entirely."""
@@ -647,7 +638,7 @@ class StatsPanel:
 
             # Label
             lbl = self.fm["tiny"].render(
-                f"{pad.name[:6]:6s} {pad.total_hits:3d}",
+                f"{pad.label[:6]:6s} {pad.total_hits:3d}",
                 True, Colors.GRAY_LIGHT
             )
             surface.blit(lbl, (self.x + 8, y - 2))

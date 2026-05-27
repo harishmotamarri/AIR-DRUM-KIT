@@ -23,6 +23,7 @@ import pygame
 import numpy as np
 import sys
 import time
+import math
 import os
 os.environ['SDL_AUDIODRIVER'] = 'directsound'
 from threading import Thread
@@ -33,7 +34,7 @@ from config import (
     WINDOW_WIDTH, WINDOW_HEIGHT, FPS_TARGET, WINDOW_TITLE,
     CAMERA_INDEX, CAMERA_WIDTH, CAMERA_HEIGHT, FLIP_HORIZONTAL,
     SAMPLE_RATE, AUDIO_CHANNELS, AUDIO_BUFFER, MAX_POLY,
-    Colors, RECORDINGS_DIR, SHOW_TUTORIAL, TUTORIAL_TIMEOUT,
+    Colors, RECORDINGS_DIR, SHOW_TUTORIAL, TUTORIAL_TIMEOUT, PADS,
 )
 from sound_generator  import SoundBank
 from hand_tracker     import HandTracker
@@ -42,6 +43,7 @@ from visual_effects   import EffectsEngine
 from beat_recorder    import BeatRecorder
 from ui_components    import (Header, Footer, BeatGridUI,
                                PadOverlay, StatsPanel, TutorialOverlay,
+                               FullscreenButton,
                                FontManager)
 
 
@@ -101,6 +103,92 @@ class CameraThread(Thread):
         self.cap.release()
 
 
+def _lerp_point(a: tuple[float, float], b: tuple[float, float], t: float) -> tuple[float, float]:
+    t = max(0.0, min(1.0, t))
+    return (a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t)
+
+
+def _ease_out_quad(t: float) -> float:
+    t = max(0.0, min(1.0, t))
+    return 1.0 - (1.0 - t) * (1.0 - t)
+
+
+class StickAnimator:
+    """Simple drumstick animation that chases a pad target and rebounds."""
+
+    def __init__(self):
+        self._sticks: dict[int, dict] = {}
+
+    def _get(self, hand_id: int, anchor: tuple[float, float]) -> dict:
+        stick = self._sticks.get(hand_id)
+        if stick is None:
+            stick = {
+                "anchor": anchor,
+                "pos": anchor,
+                "target": anchor,
+                "phase": "idle",
+                "t": 0.0,
+            }
+            self._sticks[hand_id] = stick
+        return stick
+
+    def on_hit(self, hand_id: int, anchor: tuple[float, float], target: tuple[float, float]):
+        stick = self._get(hand_id, anchor)
+        stick["anchor"] = anchor
+        stick["target"] = target
+        stick["phase"] = "strike"
+        stick["t"] = 0.0
+
+    def update(self, dt: float, hand_states):
+        anchors = {
+            state.hand_id: (float(state.strike_point.x), float(state.strike_point.y))
+            for state in hand_states
+        }
+
+        for hand_id, stick in list(self._sticks.items()):
+            if hand_id in anchors:
+                stick["anchor"] = anchors[hand_id]
+
+            if stick["phase"] == "strike":
+                stick["t"] += dt
+                k = _ease_out_quad(min(1.0, stick["t"] / 0.12))
+                stick["pos"] = _lerp_point(stick["pos"], stick["target"], k)
+                if k >= 1.0:
+                    stick["phase"] = "rebound"
+                    stick["t"] = 0.0
+            elif stick["phase"] == "rebound":
+                stick["t"] += dt
+                k = _ease_out_quad(min(1.0, stick["t"] / 0.18))
+                stick["pos"] = _lerp_point(stick["pos"], stick["anchor"], k)
+                if k >= 1.0:
+                    stick["phase"] = "idle"
+                    stick["t"] = 0.0
+                    stick["pos"] = stick["anchor"]
+            else:
+                stick["pos"] = _lerp_point(stick["pos"], stick["anchor"], min(1.0, dt * 10.0))
+
+    def render(self, surface: pygame.Surface):
+        for stick in self._sticks.values():
+            ax, ay = stick["anchor"]
+            px, py = stick["pos"]
+            dx = px - ax
+            dy = py - ay
+            dist = math.hypot(dx, dy)
+            if dist < 1.0:
+                continue
+
+            ux = dx / dist
+            uy = dy / dist
+            base = (ax - ux * 18.0, ay - uy * 18.0)
+            tip = (px + ux * 18.0, py + uy * 18.0)
+
+            pygame.draw.line(surface, (0, 0, 0, 90), base, tip, 10)
+            pygame.draw.line(surface, (244, 220, 176), base, tip, 6)
+            pygame.draw.line(surface, (255, 255, 255), (base[0] + ux * 2, base[1] + uy * 2), (tip[0] - ux * 2, tip[1] - uy * 2), 2)
+            pygame.draw.circle(surface, (255, 255, 255), (int(px), int(py)), 4)
+            pygame.draw.circle(surface, (230, 180, 120), (int(base[0]), int(base[1])), 5)
+
+
 # ══════════════════════════════════════════════════════════════
 #   AirDrumApp
 # ══════════════════════════════════════════════════════════════
@@ -113,6 +201,9 @@ class AirDrumApp:
 
     def __init__(self):
         print(BANNER)
+        self._fullscreen = False
+        self._first_gesture_consumed = False
+        self._latest_hand_states = []
         self._init_audio()
         self._init_display()
         self._init_subsystems()
@@ -141,15 +232,12 @@ class AirDrumApp:
         )
         pygame.mixer.init()
         pygame.mixer.set_num_channels(MAX_POLY)
-        self.sound_bank = SoundBank()
+        self.sound_bank = SoundBank(PADS)
 
     def _init_display(self):
         print("🖥  Initializing display...")
         pygame.init()
-        self.screen = pygame.display.set_mode(
-            (WINDOW_WIDTH, WINDOW_HEIGHT),
-            pygame.RESIZABLE | pygame.DOUBLEBUF | pygame.HWSURFACE,
-        )
+        self._set_display_mode(fullscreen=False)
         pygame.display.set_caption(WINDOW_TITLE)
 
         # Try to set a nice icon
@@ -197,11 +285,35 @@ class AirDrumApp:
         self.pad_overlay= PadOverlay(self.engine.pads)
         self.stats_panel= StatsPanel(self.engine.pads)
         self.tutorial   = TutorialOverlay()
+        self.fullscreen_button = FullscreenButton()
+        self.sticks = StickAnimator()
+
+    def _set_display_mode(self, fullscreen: bool):
+        self._fullscreen = fullscreen
+        flags = pygame.DOUBLEBUF | pygame.SCALED
+        flags |= pygame.FULLSCREEN if fullscreen else pygame.RESIZABLE
+        self.screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT), flags)
+
+    def _toggle_fullscreen(self):
+        self._set_display_mode(not self._fullscreen)
+
+    def _consume_first_gesture(self):
+        if not self._first_gesture_consumed:
+            self._first_gesture_consumed = True
+            if not self._fullscreen:
+                self._set_display_mode(True)
 
     # ── Hit Callback ──────────────────────────────────────────
 
     def _on_hit(self, event: HitEvent):
         """Called on every confirmed drum hit."""
+        anchor = (float(event.x), float(event.y))
+        for state in self._latest_hand_states:
+            if state.hand_id == event.hand_id:
+                anchor = (float(state.strike_point.x), float(state.strike_point.y))
+                break
+        self.sticks.on_hit(event.hand_id, anchor, (float(event.pad.cx), float(event.pad.cy)))
+
         # Play sound
         self.sound_bank.play(event.pad.sound_key, event.velocity)
 
@@ -227,7 +339,17 @@ class AirDrumApp:
                 self._running = False
 
             elif ev.type == pygame.KEYDOWN:
+                if ev.key == pygame.K_F11:
+                    self._toggle_fullscreen()
+                else:
+                    self._consume_first_gesture()
                 self._handle_key(ev.key)
+
+            elif ev.type == pygame.MOUSEBUTTONDOWN:
+                if self.fullscreen_button.hit_test(ev.pos):
+                    self._toggle_fullscreen()
+                else:
+                    self._consume_first_gesture()
 
             elif ev.type == pygame.VIDEORESIZE:
                 pass  # Handled by RESIZABLE flag
@@ -461,6 +583,7 @@ class AirDrumApp:
 
                 # ── Hand Tracking ────────────────────────────
                 hand_states = self.tracker.process(raw_frame)
+                self._latest_hand_states = hand_states
 
                 # ── Draw skeleton on CV frame ─────────────────
                 self.tracker.draw_skeleton(raw_frame, hand_states)
@@ -480,6 +603,9 @@ class AirDrumApp:
 
                 # ── Effects on CV frame ──────────────────────
                 self.effects.render_on_frame(raw_frame)
+
+                # ── Drumstick animation ─────────────────────
+                self.sticks.update(dt, hand_states)
 
                 # ── CV → Pygame ──────────────────────────────
                 cam_surf = self._cv_frame_to_pygame(raw_frame)
@@ -510,6 +636,7 @@ class AirDrumApp:
                     self.engine.hit_count,
                     self.effects.beat_pulse_intensity,
                 )
+                self.fullscreen_button.render(self.ui_surf, self._fullscreen)
                 self.footer.render(self.ui_surf)
 
                 # Beat grid
@@ -529,6 +656,9 @@ class AirDrumApp:
 
                 # Hand info
                 self._render_hand_info(self.ui_surf, hand_states)
+
+                # Drumsticks
+                self.sticks.render(self.ui_surf)
 
                 # HUD message
                 self._render_hud_message(self.ui_surf)

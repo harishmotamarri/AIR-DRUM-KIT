@@ -9,9 +9,8 @@ import numpy as np
 from dataclasses import dataclass
 from typing import Optional, Callable
 import time
-from config import (DRUM_PADS, FINGER_LANDMARKS, HIT_VELOCITY_THRESH, COOLDOWN_FRAMES,
-                    WINDOW_WIDTH, WINDOW_HEIGHT, HEADER_HEIGHT,
-                    FOOTER_HEIGHT, Colors)
+from config import (PADS, FINGER_LANDMARKS, HIT_VELOCITY_THRESH, COOLDOWN_FRAMES,
+                    WINDOW_WIDTH, WINDOW_HEIGHT)
 from hand_tracker import HandState, FingerTip
 
 
@@ -19,12 +18,16 @@ from hand_tracker import HandState, FingerTip
 class DrumPad:
     """Extended with finger assignment."""
     name       : str
+    label      : str
     cx         : int
     cy         : int
     rx         : int
     ry         : int
+    shape      : str
     color      : tuple
+    sample     : str
     sound_key  : str
+    key        : str | None = None
     finger_zone: str = "any"
 
     # State
@@ -87,22 +90,22 @@ class DrumEngine:
         self.hit_count = 0
 
     def _build_pads(self):
-        """Create pads from config with finger zones."""
-        usable_h = WINDOW_HEIGHT - HEADER_HEIGHT - FOOTER_HEIGHT
-        for cfg in DRUM_PADS:
-            if len(cfg) == 7:
-                name, cx_n, cy_n, rx, ry, color, skey = cfg
-                finger = "any"
-            else:
-                name, cx_n, cy_n, rx, ry, color, skey, finger = cfg
-
-            cx = int(cx_n * WINDOW_WIDTH)
-            cy = int(HEADER_HEIGHT + cy_n * usable_h)
+        """Create pads from normalized canvas coordinates."""
+        for cfg in PADS:
+            cx = int(cfg.x * WINDOW_WIDTH)
+            cy = int(cfg.y * WINDOW_HEIGHT)
+            rx = max(10, int(cfg.w * WINDOW_WIDTH * 0.5))
+            ry = max(10, int(cfg.h * WINDOW_HEIGHT * 0.5))
             self.pads.append(DrumPad(
-                name=name, cx=cx, cy=cy,
+                name=cfg.id,
+                label=cfg.label,
+                cx=cx, cy=cy,
                 rx=rx, ry=ry,
-                color=color, sound_key=skey,
-                finger_zone=finger,
+                shape=cfg.shape,
+                color=tuple(int(cfg.color[i:i+2], 16) for i in (1, 3, 5)),
+                sample=cfg.sample,
+                sound_key=cfg.id,
+                key=cfg.key,
             ))
         print(f"🥁 {len(self.pads)} drum pads initialized")
 
