@@ -193,3 +193,47 @@ class DrumEngine:
     def reset_stats(self):
         for p in self.pads:
             p.total_hits = 0
+
+    def trigger_pad_by_key(self, key: str, velocity: float = 1.0) -> HitEvent | None:
+        """Programmatically trigger a pad by its configured keyboard key.
+
+        Returns the generated HitEvent or None if no pad matched or pad is cooling.
+        """
+        if not key:
+            return None
+        k = key.upper()
+        for pad in self.pads:
+            if pad.key and pad.key.upper() == k:
+                if pad.is_cooling:
+                    return None
+
+                # Apply basic velocity bounds
+                vel = max(0.2, min(1.0, float(velocity)))
+
+                # Update pad state
+                pad.hit_intensity = 1.0
+                pad.cooldown_left = COOLDOWN_FRAMES
+                pad.total_hits += 1
+                pad.last_hit_time = time.time()
+
+                event = HitEvent(
+                    pad=pad,
+                    x=float(pad.cx),
+                    y=float(pad.cy),
+                    velocity=vel,
+                    raw_speed=0.0,
+                    hand_id=-1,
+                    handedness="Keyboard",
+                    timestamp=time.time(),
+                )
+
+                # Fire callbacks
+                for cb in self._callbacks:
+                    try:
+                        cb(event)
+                    except Exception as e:
+                        print(f"Callback error: {e}")
+
+                self.hit_count += 1
+                return event
+        return None

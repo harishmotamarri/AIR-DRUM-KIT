@@ -203,6 +203,23 @@ class Footer:
             if x_off > w - 100:
                 break
 
+        # Pad key legend (compact)
+        pad_x = x_off + 8
+        for pad in PADS:
+            pk = (getattr(pad, 'key', None) or "").upper()
+            if not pk:
+                continue
+            badge_surf = self.fm["tiny"].render(pk, True, Colors.BG_DARK)
+            badge_rect = pygame.Rect(pad_x - 4,
+                                     y + (h - badge_surf.get_height()) // 2 - 2,
+                                     badge_surf.get_width() + 8,
+                                     badge_surf.get_height() + 4)
+            pygame.draw.rect(surface, Colors.ACCENT_CYAN, badge_rect, border_radius=6)
+            surface.blit(badge_surf, (pad_x, y + (h - badge_surf.get_height()) // 2))
+            pad_x += badge_rect.width + 6
+            if pad_x > w - 60:
+                break
+
 
 class FullscreenButton:
     """Prominent top-right fullscreen control."""
@@ -398,6 +415,41 @@ class PadOverlay:
         shadow.set_alpha(label_alpha // 2)
         surface.blit(shadow, (pad.cx - shadow.get_width() // 2 + 1, pad.cy - shadow.get_height() // 2 + 1))
         surface.blit(label, (pad.cx - label.get_width() // 2, pad.cy - label.get_height() // 2))
+
+        # Key badge (small rounded rectangle under the pad)
+        try:
+            key_char = (pad.key or "").upper()
+        except Exception:
+            key_char = ""
+
+        if key_char:
+            key_surf = self.fm["tiny"].render(key_char, True, Colors.BG_DARK)
+            badge_w = key_surf.get_width() + 12
+            badge_h = key_surf.get_height() + 6
+            badge_x = int(pad.cx - badge_w // 2)
+            badge_y = int(pad.cy + pad.ry + 12)
+
+            # Badge background color pulses with intensity
+            base_col = pad.color
+            pulse = min(1.0, 0.2 + intensity * 0.8)
+            fill_col = (
+                int(base_col[0] * pulse + 240 * (1 - pulse)),
+                int(base_col[1] * pulse + 240 * (1 - pulse)),
+                int(base_col[2] * pulse + 240 * (1 - pulse)),
+            )
+
+            badge_rect = pygame.Rect(badge_x, badge_y, badge_w, badge_h)
+            # Soft glow behind badge
+            glow = pygame.Surface((badge_w + 8, badge_h + 8), pygame.SRCALPHA)
+            for i in range(3, 0, -1):
+                a = int(18 * i)
+                pygame.draw.rect(glow, (*base_col, a), (4 - i, 4 - i, badge_w + i*2, badge_h + i*2), border_radius=8)
+            surface.blit(glow, (badge_x - 4, badge_y - 4))
+
+            pygame.draw.rect(surface, fill_col, badge_rect, border_radius=8)
+            pygame.draw.rect(surface, (30, 30, 30), badge_rect, 1, border_radius=8)
+            surface.blit(key_surf, (badge_x + (badge_w - key_surf.get_width()) // 2,
+                                     badge_y + (badge_h - key_surf.get_height()) // 2))
 
         if pad.key:
             key_text = self.fm["tiny"].render(pad.key, True, Colors.BG_DARK)

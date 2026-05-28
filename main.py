@@ -401,6 +401,17 @@ class AirDrumApp:
             self.engine.reset_stats()
             self._show_message("↺  Stats reset")
 
+        # ── Letter keys mapped to pads (e.g. Q W E A S D ...)
+        else:
+            try:
+                kname = pygame.key.name(key).upper()
+            except Exception:
+                kname = ""
+
+            if len(kname) == 1 and kname.isalpha():
+                # Let the engine handle cooldowns and callbacks
+                _ = self.engine.trigger_pad_by_key(kname)
+
     def _show_message(self, text: str, duration: int = 150):
         self._message  = text
         self._msg_timer = duration
