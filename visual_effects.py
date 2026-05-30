@@ -289,7 +289,7 @@ class EffectsEngine:
 
     def render_on_pygame(self, surface: pygame.Surface,
                          font_sm: pygame.font.Font):
-        """Render popups and beat pulse on pygame surface.."""
+        """Render popups and beat pulse on pygame surface."""
         self._render_popups_pygame(surface, font_sm)
 
     def _render_popups_pygame(self, surface: pygame.Surface,
