@@ -113,7 +113,7 @@ class DrumEngine:
         """Register a function to call on every hit: fn(HitEvent)."""
         self._callbacks.append(fn)
 
-    def update(self, hand_states: list[HandState]) -> list[HitEvent]:
+    def update(self, hand_states: list[HandState], enabled: bool = True) -> list[HitEvent]:
         """
         Process all hand states, detect hits, fire callbacks.
         Returns list of HitEvents this frame.
@@ -125,6 +125,9 @@ class DrumEngine:
             pad.hit_intensity = max(0.0, pad.hit_intensity - 0.08)
             if pad.cooldown_left > 0:
                 pad.cooldown_left -= 1
+
+        if not enabled:
+            return hits
 
         for state in hand_states:
             sp = state.strike_point
@@ -194,12 +197,12 @@ class DrumEngine:
         for p in self.pads:
             p.total_hits = 0
 
-    def trigger_pad_by_key(self, key: str, velocity: float = 1.0) -> HitEvent | None:
+    def trigger_pad_by_key(self, key: str, velocity: float = 1.0, enabled: bool = True) -> HitEvent | None:
         """Programmatically trigger a pad by its configured keyboard key.
 
         Returns the generated HitEvent or None if no pad matched or pad is cooling.
         """
-        if not key:
+        if not key or not enabled:
             return None
         k = key.upper()
         for pad in self.pads:

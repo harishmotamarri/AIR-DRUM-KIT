@@ -35,6 +35,7 @@ from config import (
     CAMERA_INDEX, CAMERA_WIDTH, CAMERA_HEIGHT, FLIP_HORIZONTAL,
     SAMPLE_RATE, AUDIO_CHANNELS, AUDIO_BUFFER, MAX_POLY,
     Colors, RECORDINGS_DIR, SHOW_TUTORIAL, TUTORIAL_TIMEOUT, PADS,
+    HEADER_HEIGHT, FOOTER_HEIGHT,
 )
 from sound_generator  import SoundBank
 from hand_tracker     import HandTracker
@@ -45,6 +46,14 @@ from ui_components    import (Header, Footer, BeatGridUI,
                                PadOverlay, StatsPanel, TutorialOverlay,
                                FullscreenButton,
                                FontManager)
+
+
+show_drum_pads = False
+toggle_cooldown = 1.0
+last_toggle_time = 0.0
+OPEN_PALM_HOLD_SECONDS = 0.30
+PAD_FADE_SECONDS = 0.30
+TOGGLE_BANNER_SECONDS = 1.50
 
 
 # ══════════════════════════════════════════════════════════════
@@ -204,6 +213,13 @@ class AirDrumApp:
         self._fullscreen = False
         self._first_gesture_consumed = False
         self._latest_hand_states = []
+        self._open_palm_since = None
+        self._toggle_armed = True
+        self._gesture_ready = False
+        self._pad_visibility_alpha = 0.0
+        self._pad_visibility_target = 0.0
+        self._pad_visibility_speed = 255.0 / PAD_FADE_SECONDS
+        self._toggle_banner = None
         self._init_audio()
         self._init_display()
         self._init_subsystems()
@@ -302,6 +318,153 @@ class AirDrumApp:
             self._first_gesture_consumed = True
             if not self._fullscreen:
                 self._set_display_mode(True)
+
+    def _set_pad_visibility(self, visible: bool):
+        global show_drum_pads
+        show_drum_pads = visible
+        self._pad_visibility_target = 255.0 if visible else 0.0
+
+    def _start_toggle_banner(self, activated: bool):
+        self._toggle_banner = {
+            "text": "DRUM KIT ACTIVATED" if activated else "DRUM KIT HIDDEN",
+            "activated": activated,
+            "start": time.time(),
+            "duration": TOGGLE_BANNER_SECONDS,
+        }
+
+    def _play_toggle_sound(self, activated: bool):
+        sound_key = "ui_activate" if activated else "ui_deactivate"
+        try:
+            self.sound_bank.play(sound_key, 1.0)
+        except Exception:
+            pass
+
+    def _toggle_drum_pads(self, now: float):
+        global last_toggle_time
+
+        current_visible = show_drum_pads
+        new_visible = not current_visible
+        last_toggle_time = now
+        self._toggle_armed = False
+        self._set_pad_visibility(new_visible)
+        self._start_toggle_banner(new_visible)
+        self._play_toggle_sound(new_visible)
+
+    def _update_gesture_toggle(self, hand_states, now: float):
+        global last_toggle_time
+
+        open_palm_detected = any(state.is_open_palm for state in hand_states)
+
+        if not open_palm_detected:
+            self._gesture_ready = True
+            self._open_palm_since = None
+            self._toggle_armed = True
+            return
+
+        if not self._gesture_ready:
+            self._open_palm_since = None
+            self._toggle_armed = False
+            return
+
+        if self._open_palm_since is None:
+            self._open_palm_since = now
+
+        if not self._toggle_armed:
+            return
+
+        cooldown_remaining = toggle_cooldown - (now - last_toggle_time)
+        if cooldown_remaining > 0.0:
+            self._toggle_armed = False
+            return
+
+        hold_time = now - self._open_palm_since
+        if hold_time >= OPEN_PALM_HOLD_SECONDS:
+            self._toggle_drum_pads(now)
+
+    def _update_pad_visibility(self, dt: float):
+        target = self._pad_visibility_target
+        if self._pad_visibility_alpha == target:
+            return
+
+        step = self._pad_visibility_speed * dt
+        if self._pad_visibility_alpha < target:
+            self._pad_visibility_alpha = min(target, self._pad_visibility_alpha + step)
+        else:
+            self._pad_visibility_alpha = max(target, self._pad_visibility_alpha - step)
+
+    def _render_toggle_banner(self, surface: pygame.Surface):
+        if not self._toggle_banner:
+            return
+
+        now = time.time()
+        elapsed = now - self._toggle_banner["start"]
+        duration = self._toggle_banner["duration"]
+        if elapsed >= duration:
+            self._toggle_banner = None
+            return
+
+        progress = elapsed / duration
+        text = self._toggle_banner["text"]
+        activated = self._toggle_banner["activated"]
+
+        text_surf = self.fm["big"].render(text, True, Colors.WHITE)
+        scale = 0.78 + 0.30 * min(1.0, progress / 0.25)
+        scale += 0.06 * math.sin(progress * math.pi * 3.0)
+        scale = max(0.55, scale)
+        scaled_size = (
+            max(1, int(text_surf.get_width() * scale)),
+            max(1, int(text_surf.get_height() * scale)),
+        )
+        text_surf = pygame.transform.smoothscale(text_surf, scaled_size)
+
+        if progress < 0.18:
+            alpha = int(255 * (progress / 0.18))
+        else:
+            alpha = int(255 * max(0.0, 1.0 - ((progress - 0.18) / 0.82)))
+        text_surf.set_alpha(alpha)
+
+        glow_surface = pygame.Surface((WINDOW_WIDTH, WINDOW_HEIGHT), pygame.SRCALPHA)
+        cx = WINDOW_WIDTH // 2
+        cy = WINDOW_HEIGHT // 2 - 40
+        base_color = Colors.ACCENT_BLUE if activated else Colors.ACCENT_CYAN
+        glow_color = (80, 160, 255) if activated else (100, 240, 255)
+
+        for offset, glow_alpha in [(4, 50), (2, 85), (1, 120)]:
+            glow = self.fm["big"].render(text, True, glow_color)
+            glow = pygame.transform.smoothscale(
+                glow,
+                (
+                    max(1, int(glow.get_width() * scale)),
+                    max(1, int(glow.get_height() * scale)),
+                ),
+            )
+            glow.set_alpha(int(glow_alpha * max(0.0, 1.0 - progress)))
+            glow_rect = glow.get_rect(center=(cx + offset, cy + offset))
+            glow_surface.blit(glow, glow_rect)
+
+        if activated:
+            pulse_surface = pygame.Surface((WINDOW_WIDTH, WINDOW_HEIGHT), pygame.SRCALPHA)
+            pulse_progress = min(1.0, elapsed / 0.7)
+            radius = int(max(WINDOW_WIDTH, WINDOW_HEIGHT) * 0.10 + pulse_progress * max(WINDOW_WIDTH, WINDOW_HEIGHT) * 0.55)
+            pulse_alpha = int(130 * (1.0 - pulse_progress))
+            pygame.draw.circle(pulse_surface, (*base_color, pulse_alpha), (cx, WINDOW_HEIGHT // 2), radius, 10)
+            pygame.draw.circle(pulse_surface, (*glow_color, pulse_alpha // 2), (cx, WINDOW_HEIGHT // 2), max(10, radius // 2), 2)
+            surface.blit(pulse_surface, (0, 0))
+
+            sweep_surface = pygame.Surface((WINDOW_WIDTH, WINDOW_HEIGHT), pygame.SRCALPHA)
+            sweep_progress = min(1.0, elapsed / 0.8)
+            sweep_x = int(-WINDOW_WIDTH * 0.25 + sweep_progress * WINDOW_WIDTH * 1.35)
+            sweep_rect = pygame.Rect(sweep_x, HEADER_HEIGHT, WINDOW_WIDTH // 5, WINDOW_HEIGHT - HEADER_HEIGHT - FOOTER_HEIGHT)
+            pygame.draw.rect(sweep_surface, (40, 140, 255, int(40 * (1.0 - sweep_progress))), sweep_rect)
+            pygame.draw.rect(sweep_surface, (120, 220, 255, int(70 * (1.0 - sweep_progress))), sweep_rect.inflate(-sweep_rect.width // 3, 0))
+            surface.blit(sweep_surface, (0, 0))
+
+        surface.blit(glow_surface, (0, 0))
+
+        shadow = self.fm["big"].render(text, True, (0, 0, 0))
+        shadow.set_alpha(max(0, alpha // 2))
+        surface.blit(shadow, (cx - text_surf.get_width() // 2 + 4, cy - text_surf.get_height() // 2 + 4))
+        surface.blit(text_surf, (cx - text_surf.get_width() // 2, cy - text_surf.get_height() // 2))
 
     # ── Hit Callback ──────────────────────────────────────────
 
@@ -410,7 +573,7 @@ class AirDrumApp:
 
             if len(kname) == 1 and kname.isalpha():
                 # Let the engine handle cooldowns and callbacks
-                _ = self.engine.trigger_pad_by_key(kname)
+                _ = self.engine.trigger_pad_by_key(kname, enabled=show_drum_pads)
 
     def _show_message(self, text: str, duration: int = 150):
         self._message  = text
@@ -595,12 +758,13 @@ class AirDrumApp:
                 # ── Hand Tracking ────────────────────────────
                 hand_states = self.tracker.process(raw_frame)
                 self._latest_hand_states = hand_states
+                self._update_gesture_toggle(hand_states, now)
 
                 # ── Draw skeleton on CV frame ─────────────────
                 self.tracker.draw_skeleton(raw_frame, hand_states)
 
                 # ── Drum Hit Detection ────────────────────────
-                hits = self.engine.update(hand_states)
+                hits = self.engine.update(hand_states, enabled=show_drum_pads)
 
                 # ── Tutorial State ─────────────────────────
                 if SHOW_TUTORIAL and not self.tutorial.completed:
@@ -618,6 +782,9 @@ class AirDrumApp:
                 # ── Drumstick animation ─────────────────────
                 self.sticks.update(dt, hand_states)
 
+                # ── Pad visibility animation ────────────────
+                self._update_pad_visibility(dt)
+
                 # ── CV → Pygame ──────────────────────────────
                 cam_surf = self._cv_frame_to_pygame(raw_frame)
                 self.screen.blit(cam_surf, (0, 0))
@@ -627,8 +794,14 @@ class AirDrumApp:
 
                 # ── Pad Overlay ──────────────────────────────
                 self.pad_surf.fill((0, 0, 0, 0))
-                self.pad_overlay.render(self.pad_surf, hand_states)
-                self.screen.blit(self.pad_surf, (0, 0))
+                if self._pad_visibility_alpha > 0.5:
+                    self.pad_overlay.render(self.pad_surf, hand_states)
+                    if self._pad_visibility_alpha >= 254:
+                        self.screen.blit(self.pad_surf, (0, 0))
+                    else:
+                        pad_layer = self.pad_surf.copy()
+                        pad_layer.set_alpha(int(self._pad_visibility_alpha))
+                        self.screen.blit(pad_layer, (0, 0))
 
                 # ── Effects Pygame Layer ──────────────────────
                 self.effects_surf.fill((0, 0, 0, 0))
@@ -673,6 +846,9 @@ class AirDrumApp:
 
                 # HUD message
                 self._render_hud_message(self.ui_surf)
+
+                # Toggle banner and transition FX
+                self._render_toggle_banner(self.ui_surf)
 
                 self.screen.blit(self.ui_surf, (0, 0))
 

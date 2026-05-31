@@ -53,6 +53,9 @@ class HandState:
     strike_point : FingerTip = field(default_factory=lambda: FingerTip(8))
     is_fist      : bool      = False   # Fist = wrist used as beater
     confidence   : float     = 1.0
+    open_finger_count: int    = 0
+    is_open_palm : bool      = False
+    finger_open_states: dict = field(default_factory=dict)
 
 
 class VelocityFilter:
@@ -106,6 +109,14 @@ class HandTracker:
         (LM.THUMB_TIP,       "thumb_tip" ),
     ]
 
+    FINGER_OPEN_RULES = {
+        "thumb":  (4, 3),
+        "index":  (8, 6),
+        "middle": (12, 10),
+        "ring":   (16, 14),
+        "pinky":  (20, 18),
+    }
+
     def __init__(self):
         self._mp_hands = mp.solutions.hands
         self._hands = self._mp_hands.Hands(
@@ -147,6 +158,24 @@ class HandTracker:
         except Exception:
             return False
 
+    def _is_finger_open(self, landmarks_norm, tip_id: int, pip_id: int) -> bool:
+        try:
+            return landmarks_norm[tip_id].y < landmarks_norm[pip_id].y
+        except Exception:
+            return False
+
+    def _get_open_finger_states(self, landmarks_norm) -> tuple[dict[str, bool], int]:
+        finger_states: dict[str, bool] = {}
+        open_count = 0
+
+        for finger_name, (tip_id, pip_id) in self.FINGER_OPEN_RULES.items():
+            is_open = self._is_finger_open(landmarks_norm, tip_id, pip_id)
+            finger_states[finger_name] = is_open
+            if is_open:
+                open_count += 1
+
+        return finger_states, open_count
+
     def process(self, frame_bgr: np.ndarray) -> list[HandState]:
         """Process frame and return hand states with all fingertip velocities."""
         self.frame_count += 1
@@ -179,6 +208,11 @@ class HandTracker:
                 confidence=score,
                 is_fist=self._detect_fist(lm_obj.landmark, label),
             )
+
+            finger_states, open_count = self._get_open_finger_states(lm_obj.landmark)
+            state.finger_open_states = finger_states
+            state.open_finger_count = open_count
+            state.is_open_palm = open_count == 5
 
             # Track all fingertips with velocity
             for lm_id, attr_name in self.TRACKED_LANDMARKS:

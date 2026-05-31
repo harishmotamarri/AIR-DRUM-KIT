@@ -9,6 +9,7 @@ import numpy as np
 from scipy import signal
 import pygame
 import os
+import math
 from config import SAMPLE_RATE
 
 
@@ -202,6 +203,29 @@ def gen_perc(duration=0.15) -> pygame.mixer.Sound:
     return _to_stereo_sound(wave, 0.8)
 
 
+def gen_ui_beep(duration=0.12, freq=880.0, sweep=0.0, brightness=0.35) -> pygame.mixer.Sound:
+    """Short synthetic UI beep with a clean futuristic tone."""
+    sr = SAMPLE_RATE
+    t = np.linspace(0, duration, int(sr * duration), False)
+
+    if sweep:
+        freq_env = freq + sweep * np.linspace(0.0, 1.0, len(t))
+        phase = 2 * np.pi * np.cumsum(freq_env) / sr
+        wave = np.sin(phase)
+    else:
+        wave = np.sin(2 * np.pi * freq * t)
+
+    harmonic = np.sin(2 * np.pi * freq * 2.02 * t) * brightness * 0.35
+    shimmer = np.sin(2 * np.pi * freq * 3.01 * t + math.pi / 4) * brightness * 0.12
+    attack = 1.0 - np.exp(-t * 240)
+    decay = np.exp(-t * 18)
+    envelope = attack * decay
+
+    wave = (wave * 0.85 + harmonic + shimmer) * envelope
+    wave = np.tanh(wave * 1.9) / np.tanh(1.9)
+    return _to_stereo_sound(wave, 0.72)
+
+
 class SoundBank:
     """
     Loads and manages all drum sounds.
@@ -219,6 +243,8 @@ class SoundBank:
         "tom2":    lambda: gen_tom(pitch=150),
         "clap":    lambda: gen_clap(),
         "perc":    lambda: gen_perc(),
+        "ui_activate":   lambda: gen_ui_beep(freq=940.0, sweep=120.0, brightness=0.45),
+        "ui_deactivate": lambda: gen_ui_beep(freq=420.0, sweep=-60.0, brightness=0.28),
     }
 
     def __init__(self, pads=None):
