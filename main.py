@@ -46,14 +46,17 @@ from ui_components    import (Header, Footer, BeatGridUI,
                                PadOverlay, StatsPanel, TutorialOverlay,
                                FullscreenButton,
                                FontManager)
+from air_writer       import AirWriter
 
+MODE_DRUMMING = "drumming"
+MODE_WRITING  = "writing"
 
-show_drum_pads = False
-toggle_cooldown = 1.0
+toggle_cooldown = 1.5
 last_toggle_time = 0.0
 OPEN_PALM_HOLD_SECONDS = 0.30
 PAD_FADE_SECONDS = 0.30
 TOGGLE_BANNER_SECONDS = 1.50
+
 
 
 # ══════════════════════════════════════════════════════════════
@@ -216,10 +219,13 @@ class AirDrumApp:
         self._open_palm_since = None
         self._toggle_armed = True
         self._gesture_ready = False
-        self._pad_visibility_alpha = 0.0
-        self._pad_visibility_target = 0.0
+        
+        self.mode = MODE_DRUMMING
+        self._pad_visibility_alpha = 255.0
+        self._pad_visibility_target = 255.0
         self._pad_visibility_speed = 255.0 / PAD_FADE_SECONDS
         self._toggle_banner = None
+
         self._init_audio()
         self._init_display()
         self._init_subsystems()
@@ -285,8 +291,10 @@ class AirDrumApp:
         self.engine   = DrumEngine()
         self.effects  = EffectsEngine()
         self.recorder = BeatRecorder()
+        self.air_writer = AirWriter()
 
         if not self.camera.ok:
+
             print("⚠️  Camera not found — using test pattern")
         self.camera.start()
 
@@ -319,15 +327,21 @@ class AirDrumApp:
             if not self._fullscreen:
                 self._set_display_mode(True)
 
-    def _set_pad_visibility(self, visible: bool):
-        global show_drum_pads
-        show_drum_pads = visible
-        self._pad_visibility_target = 255.0 if visible else 0.0
+    def _set_mode(self, mode: str):
+        self.mode = mode
+        if mode == MODE_DRUMMING:
+            self._pad_visibility_target = 255.0
+            self._start_toggle_banner("DRUM MODE")
+            self._play_toggle_sound(True)
+        else:
+            self._pad_visibility_target = 0.0
+            self._start_toggle_banner("AIR WRITING MODE")
+            self._play_toggle_sound(False)
 
-    def _start_toggle_banner(self, activated: bool):
+    def _start_toggle_banner(self, text: str):
         self._toggle_banner = {
-            "text": "DRUM KIT ACTIVATED" if activated else "DRUM KIT HIDDEN",
-            "activated": activated,
+            "text": text,
+            "activated": (text == "DRUM MODE"),
             "start": time.time(),
             "duration": TOGGLE_BANNER_SECONDS,
         }
@@ -339,16 +353,13 @@ class AirDrumApp:
         except Exception:
             pass
 
-    def _toggle_drum_pads(self, now: float):
+    def _toggle_mode(self, now: float):
         global last_toggle_time
 
-        current_visible = show_drum_pads
-        new_visible = not current_visible
         last_toggle_time = now
         self._toggle_armed = False
-        self._set_pad_visibility(new_visible)
-        self._start_toggle_banner(new_visible)
-        self._play_toggle_sound(new_visible)
+        new_mode = MODE_WRITING if self.mode == MODE_DRUMMING else MODE_DRUMMING
+        self._set_mode(new_mode)
 
     def _update_gesture_toggle(self, hand_states, now: float):
         global last_toggle_time
@@ -379,7 +390,40 @@ class AirDrumApp:
 
         hold_time = now - self._open_palm_since
         if hold_time >= OPEN_PALM_HOLD_SECONDS:
-            self._toggle_drum_pads(now)
+            self._toggle_mode(now)
+
+    def _process_writing_gestures(self, hand_states, now: float):
+        if self.mode != MODE_WRITING:
+            return
+            
+        for state in hand_states:
+            idx_up = state.finger_open_states.get("index", False)
+            mid_up = state.finger_open_states.get("middle", False)
+            rng_up = state.finger_open_states.get("ring", False)
+            pnk_up = state.finger_open_states.get("pinky", False)
+            
+            if idx_up and mid_up and not rng_up and state.open_finger_count == 2:
+                # Clear canvas (Peace sign)
+                if now - self.air_writer.last_clear_time > 1.5:
+                    self.air_writer.clear_canvas()
+                    self.air_writer.last_clear_time = now
+                    self._show_message("CANVAS CLEARED", 60)
+            elif idx_up and mid_up and rng_up and not pnk_up and state.open_finger_count == 3:
+                # Undo last stroke (Three fingers)
+                if now - self.air_writer.last_undo_time > 0.5:
+                    self.air_writer.undo_last_stroke()
+                    self.air_writer.last_undo_time = now
+                    self._show_message("UNDO", 60)
+            elif idx_up and mid_up and rng_up and pnk_up and state.open_finger_count == 4:
+                # Change Color (Four fingers)
+                if now - self.air_writer.last_color_time > 1.0:
+                    self.air_writer.cycle_color()
+                    self.air_writer.last_color_time = now
+                    cname = f"RGB: {self.air_writer.color}"
+                    self._show_message(f"COLOR CHANGED {cname}", 60)
+            
+            # Allow air writer to process the hand position
+            self.air_writer.process_hand(state, now)
 
     def _update_pad_visibility(self, dt: float):
         target = self._pad_visibility_target
@@ -554,11 +598,19 @@ class AirDrumApp:
             self._show_message(f"♩ BPM → {self.recorder.bpm:.0f}")
 
         elif key == pygame.K_s:
-            path = self.recorder.save()
-            if path:
-                self._show_message(f"💾  Saved: {os.path.basename(path)}")
+            if self.mode == MODE_WRITING:
+                self._save_drawing()
             else:
-                self._show_message("⚠️  Nothing to save")
+                path = self.recorder.save()
+                if path:
+                    self._show_message(f"💾  Saved: {os.path.basename(path)}")
+                else:
+                    self._show_message("⚠️  Nothing to save")
+                    
+        elif key == pygame.K_c:
+            if self.mode == MODE_WRITING:
+                self.air_writer.cycle_color()
+                self._show_message(f"COLOR CHANGED RGB: {self.air_writer.color}", 60)
 
         elif key == pygame.K_r:
             self.engine.reset_stats()
@@ -573,7 +625,15 @@ class AirDrumApp:
 
             if len(kname) == 1 and kname.isalpha():
                 # Let the engine handle cooldowns and callbacks
-                _ = self.engine.trigger_pad_by_key(kname, enabled=show_drum_pads)
+                _ = self.engine.trigger_pad_by_key(kname, enabled=(self.mode == MODE_DRUMMING))
+
+    def _save_drawing(self):
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        filename = f"drawing_{timestamp}.png"
+        path = os.path.join(RECORDINGS_DIR, filename)
+        os.makedirs(RECORDINGS_DIR, exist_ok=True)
+        pygame.image.save(self.screen, path)
+        self._show_message(f"💾 Saved Drawing: {filename}", 60)
 
     def _show_message(self, text: str, duration: int = 150):
         self._message  = text
@@ -759,12 +819,16 @@ class AirDrumApp:
                 hand_states = self.tracker.process(raw_frame)
                 self._latest_hand_states = hand_states
                 self._update_gesture_toggle(hand_states, now)
+                self._process_writing_gestures(hand_states, now)
 
                 # ── Draw skeleton on CV frame ─────────────────
                 self.tracker.draw_skeleton(raw_frame, hand_states)
+                
+                if self.mode == MODE_WRITING:
+                    self.air_writer.render_cv2(raw_frame)
 
                 # ── Drum Hit Detection ────────────────────────
-                hits = self.engine.update(hand_states, enabled=show_drum_pads)
+                hits = self.engine.update(hand_states, enabled=(self.mode == MODE_DRUMMING))
 
                 # ── Tutorial State ─────────────────────────
                 if SHOW_TUTORIAL and not self.tutorial.completed:
